@@ -526,12 +526,17 @@ __kernel void md5(__global unsigned char *a, __global unsigned char *b, __global
 	const int arraysatonce = 200;
 
 	for (int i = 0; i < arraysatonce; i++) {
+		unsigned int currentlen = mlen[i];
+
 		int len = 0;
 		for (int j = 0; j < i - 1; j++) {
-			len += mlen[j];
+			len += currentlen;
 		}
+
+		printf("%s index: %d mlen: %d i: %d", (__global unsigned char *)(a + len), len, currentlen, i);
+
 		MD5Init(&context);
-		MD5UpdateG(&context, (__global unsigned char *)(&(a[len - 1])), mlen[i]);
+		MD5UpdateG(&context, (__global unsigned char *)(a + len), currentlen);
 		MD5Final(digest, &context);
 		MD5_memcpyGP(&(b[i * 16]), digest, 16);
 	}
@@ -557,7 +562,7 @@ if False:
 				generated.append(bytes(chr(i) + chr(j) + chr(y), "ascii"))
 else:
 	generated = [
-		b"Password",
+		b"password",
 		b"0xAC0",
 		b"0AC0",
 		b"AC0",
