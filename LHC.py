@@ -600,7 +600,7 @@ b = cl_array.to_device(queue, numpy.matrix([[0 for _ in range(16)] for _ in rang
 start = time()
 
 history_hash = numpy.matrix(numpy.matrix(basemd5))
-history_word = numpy.array([])
+history_word = numpy.array([basestr])
 
 for attempt in generated:
 	basestr = attempt
@@ -666,7 +666,7 @@ for attempt in generated:
 
 		#                                  2 / 2 ^ 128, 128 is the size of the output in bits
 		print(f"\nChances increased to: {Decimal("0.00000000000000000000000000000000000000294") * Decimal(len(history_hash)):.50f}".rstrip("0"))
-	print(f"\nChances increased to: {Decimal("0.00000000000000000000000000000000000000294") * Decimal(len(history_hash)):.50f}".rstrip("0"))
+	print()
 
 print()
 print("Ran out of values in: ", time() - start)
