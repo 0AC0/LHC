@@ -4,6 +4,7 @@ from time import time
 import pyopencl as cl
 import pyopencl.array as cl_array
 import numpy
+from decimal import Decimal
 
 arraysatonce = 200
 
@@ -540,6 +541,22 @@ __kernel void md5(__global unsigned char *a, __global unsigned char *b, __global
 	MD5_memcpyGP(&(b[id * 16]), digest, 16);
 }
 
+__kernel void check(__global unsigned char *a, __global unsigned char *b, const unsigned int blen, unsigned int ret) {
+	int id = get_global_id(0);
+	ret = 0;
+	bool equal = 1;
+	for (int i = 0; i < blen; i++) {
+		for (int j = 0; j < 16; j++) {
+			if (a[id * 16 + j] != b[blen * 16 + j])
+				equal = 0;
+				break;
+		}
+		if (equal == 1) {
+			ret = i;
+			return;
+		}
+	}
+}
 
 """).build(options="-cl-std=CL2.0")
 
@@ -582,8 +599,7 @@ b = cl_array.to_device(queue, numpy.matrix([[0 for _ in range(16)] for _ in rang
 
 start = time()
 
-history_hash = numpy.matrix([]).astype(numpy.ubyte)
-history_hash = numpy.reshape(history_hash, (-1, 16))
+history_hash = numpy.matrix(numpy.matrix(basemd5))
 history_word = numpy.array([])
 
 for attempt in generated:
@@ -591,6 +607,8 @@ for attempt in generated:
 	basemd5 = numpy.array(bytearray(hashlibmd5(basestr, usedforsecurity=False).digest()))
 	print(str(basestr, "utf-8"), "= ", end="")
 	printhex(basemd5)
+	history_word = numpy.append(history_word, [str(basestr, "utf-8")], axis=0)
+	history_hash = numpy.append(history_hash, numpy.matrix(basemd5), axis=0)
 	workingstrs = ["" for _ in range(arraysatonce)]
 
 	for backtofront in [False, True]:
@@ -608,7 +626,7 @@ for attempt in generated:
 					workingstrs[i] += chr(letter)
 
 				if backtofront:
-					workingstrs[i] += basestr
+					workingstrs[i] += str(basestr, "utf-8")
 
 				mlen[i] = numpy.uint32(len(workingstrs[i]))
 
@@ -621,31 +639,34 @@ for attempt in generated:
 			program.md5(queue, (arraysatonce,), None, a.data, b.data, mlen.data)
 			queue.finish()
 
-			for h in range(len(history_hash)):
-				for i in range(arraysatonce):
-					if numpy.array_equal(history_hash.A[h], numpy.reshape(b.get(), (-1, 16))[i]):
-						print()
-						print()
+			ret = numpy.uint32(0)
+			h = cl_array.to_device(queue, history_hash.A1).astype(numpy.ubyte)
+			program.check(queue, h.shape, None, h.data, b.data, numpy.uint32(arraysatonce), ret)
+			queue.finish()
 
-						print("Collision found:", workingstrs[i])
-						print("Word:", history_word[h])
+			if ret != 0:
+				print()
+				print()
 
-						print("Hash: ", end="")
-						printhex(history_hash.A[h])
+				print("Collision found:", workingstrs[ret])
+				print("Word:", history_word[ret])
 
-						print("Hash: ", end="")
-						wordmd5 = numpy.array(bytearray(hashlibmd5(bytearray(history_word[h], "utf-8") , usedforsecurity=False).digest())).astype(numpy.ubyte)
-						printhex(wordmd5)
+				print("Hash: ", end="")
+				printhex(history_hash.A[ret])
 
-						print("Completed in: ", time() - start)
-						exit(0)
+				print("Hash: ", end="")
+				wordmd5 = numpy.array(bytearray(hashlibmd5(bytearray(history_word[ret], "utf-8") , usedforsecurity=False).digest())).astype(numpy.ubyte)
+				printhex(wordmd5)
+
+				print("Completed in: ", time() - start)
+				exit(0)
 
 			history_word = numpy.append(history_word, workingstrs, axis=0)
 			history_hash = numpy.append(history_hash, numpy.reshape(b.get(), (-1, 16)), axis=0)
 
-		#								2 / 2 ^ 128, 128 is the size of the output in bits
-		print("Chances increased to: ", 0.00000000000000000000000000000000000000294 * len(history_hash))
-	print()
+		#                                  2 / 2 ^ 128, 128 is the size of the output in bits
+		print(f"\nChances increased to: {Decimal("0.00000000000000000000000000000000000000294") * Decimal(len(history_hash)):.50f}".rstrip("0"))
+	print(f"\nChances increased to: {Decimal("0.00000000000000000000000000000000000000294") * Decimal(len(history_hash)):.50f}".rstrip("0"))
 
 print()
 print("Ran out of values in: ", time() - start)
