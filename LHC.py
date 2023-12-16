@@ -17,10 +17,13 @@ queue = cl.CommandQueue(ctx)
 
 basemd5 = numpy.array(bytearray(hashlibmd5(basestr, usedforsecurity=False).digest())).astype(numpy.ubyte)
 
+print("Using GPU device:", device.name, "(" + cl.get_platforms()[0].name + ") version:", cl.get_cl_header_version())
+
 program = cl.Program(ctx, """
 
 typedef __private unsigned char *POINTERP;
 typedef __constant unsigned char *POINTERC;
+typedef __private unsigned UINT4P;
 typedef unsigned short UINT2;
 typedef unsigned UINT4;
 
@@ -165,7 +168,7 @@ static void DecodeG(UINT4 *output, __global unsigned char *input, unsigned int l
                     (((UINT4)input[j + 2]) << 16) | (((UINT4)input[j + 3]) << 24);
 }
 
-static void MD5TransformC(UINT4 state[4], __constant unsigned char block[64]) {
+static void MD5TransformC(__generic UINT4 state[4], __constant unsigned char block[64]) {
     UINT4 a = state[0], b = state[1], c = state[2], d = state[3], x[16];
 
     DecodeC(x, block, 64);
@@ -250,7 +253,7 @@ static void MD5TransformC(UINT4 state[4], __constant unsigned char block[64]) {
     MD5_memset((POINTERP)x, 0, sizeof(x));
 }
 
-static void MD5TransformG(UINT4 state[4], __global unsigned char block[64]) {
+static void MD5TransformG(__generic UINT4 state[4], __global unsigned char block[64]) {
     UINT4 a = state[0], b = state[1], c = state[2], d = state[3], x[16];
 
     DecodeG(x, block, 64);
@@ -335,7 +338,7 @@ static void MD5TransformG(UINT4 state[4], __global unsigned char block[64]) {
     MD5_memset((POINTERP)x, 0, sizeof(x));
 }
 
-static void MD5TransformP(UINT4 state[4], unsigned char block[64]) {
+static void MD5TransformP(__generic UINT4 state[4], __generic unsigned char block[64]) {
     UINT4 a = state[0], b = state[1], c = state[2], d = state[3], x[16];
 
     DecodeP(x, block, 64);
@@ -434,7 +437,7 @@ void MD5UpdateG(MD5_CTX *context, __global unsigned char *input, unsigned int in
     if (inputLen >= partLen) {
         MD5_memcpyPG(&context->buffer[index], input, partLen);
 
-        MD5TransformP(context->state, context->buffer);
+        MD5TransformP((UINT4 *)context->state, context->buffer);
 
         for (i = partLen; i + 63 < inputLen; i += 64)
             MD5TransformG(context->state, &input[i]);
@@ -520,30 +523,25 @@ void MD5Final(unsigned char digest[16], MD5_CTX *context) {
 }
 
 __kernel void md5(__global unsigned char *a, __global unsigned char *b, __global unsigned int *mlen) {
+	unsigned char digest[16];
 	MD5_CTX context;
-    unsigned char digest[16];
 
-	const int arraysatonce = 200;
+	int id = get_global_id(0);
+	unsigned int currentlen = mlen[id];
+	int len = 0;
 
-	for (int i = 0; i < arraysatonce; i++) {
-		unsigned int currentlen = mlen[i];
+	for (int i = 0; i < id; i++)
+		len += mlen[i];
 
-		int len = 0;
-		for (int j = 0; j < i - 1; j++) {
-			len += currentlen;
-		}
+	MD5Init(&context);
+	MD5UpdateG(&context, (__global unsigned char *)&(a[len]), currentlen);
+	MD5Final(digest, &context);
 
-		printf("%s index: %d mlen: %d i: %d", (__global unsigned char *)(a + len), len, currentlen, i);
-
-		MD5Init(&context);
-		MD5UpdateG(&context, (__global unsigned char *)(a + len), currentlen);
-		MD5Final(digest, &context);
-		MD5_memcpyGP(&(b[i * 16]), digest, 16);
-	}
+	MD5_memcpyGP(&(b[id * 16]), digest, 16);
 }
 
 
-""").build()
+""").build(options="-cl-std=CL2.0")
 
 def printhex(string):
 	for i in range(16):
@@ -569,6 +567,7 @@ else:
 		b"AC",
 	]
 
+
 maxpossiblelen = 0
 
 for i in generated:
@@ -577,24 +576,22 @@ for i in generated:
 
 maxpossiblelen += arraysatonce
 
-a = cl_array.to_device(queue, numpy.matrix([[0 for _ in range(maxpossiblelen)] for _ in range(arraysatonce)]).A1.astype(numpy.ubyte))
+#a = cl_array.to_device(queue, numpy.matrix([[0 for _ in range(maxpossiblelen)] for _ in range(arraysatonce)]).A1.astype(numpy.ubyte))
 mlen = cl_array.to_device(queue, numpy.array([0 for _ in range(arraysatonce)]).astype(numpy.uint32))
 b = cl_array.to_device(queue, numpy.matrix([[0 for _ in range(16)] for _ in range(arraysatonce)]).A1.astype(numpy.ubyte))
 
-print("Using GPU device:", device.name, "(" + cl.get_platforms()[0].name + ")")
-
 start = time()
 
-history_hash = numpy.matrix([0xff for _ in range(16)]).A1.astype(numpy.ubyte)
+history_hash = numpy.matrix([]).astype(numpy.ubyte)
 history_hash = numpy.reshape(history_hash, (-1, 16))
 history_word = numpy.array([])
 
 for attempt in generated:
 	basestr = attempt
-	basemd5 = numpy.array(bytearray(hashlibmd5(basestr, usedforsecurity=False).digest())).astype(numpy.ubyte)
+	basemd5 = numpy.array(bytearray(hashlibmd5(basestr, usedforsecurity=False).digest()))
 	print(str(basestr, "utf-8"), "= ", end="")
 	printhex(basemd5)
-	workingstrs = [basestr for _ in range(arraysatonce)]
+	workingstrs = ["" for _ in range(arraysatonce)]
 
 	for backtofront in [False, True]:
 		if backtofront:
@@ -602,45 +599,53 @@ for attempt in generated:
 		for letter in alphabet:
 			print(chr(letter), end='')
 
-			workingstrs = [basestr for _ in range(arraysatonce)]
 
 			for i in range(arraysatonce):
-				for j in range(i + 1):
-					if backtofront:
-						workingstrs[i] = bytes(chr(letter) + str(workingstrs[i], "utf-8"), "utf-8")
-					else:
-						workingstrs[i] = bytes(str(workingstrs[i], "utf-8") + chr(letter), "utf-8")
+				if not backtofront:
+					workingstrs[i] = str(basestr, "utf-8")
+
+				for _ in range(i + 1):
+					workingstrs[i] += chr(letter)
+
+				if backtofront:
+					workingstrs[i] += basestr
+
 				mlen[i] = numpy.uint32(len(workingstrs[i]))
 
-			a = cl_array.to_device(queue, numpy.matrix(workingstrs).A1)
-			program.md5(queue, a.shape, None, a.data, b.data, mlen.data)
+			final = []
+			for i in map(list, workingstrs):
+				for j in i:
+					final.append(ord(j))
+
+			a = cl_array.to_device(queue, numpy.array(bytearray(final)))
+			program.md5(queue, (arraysatonce,), None, a.data, b.data, mlen.data)
 			queue.finish()
 
-			history_word = numpy.append(history_word, workingstrs)
-
-			for x in range(len(history_hash)):
+			for h in range(len(history_hash)):
 				for i in range(arraysatonce):
-					if (history_hash[x] == numpy.reshape(b.get(), (-1, 16))[i]).all():
+					if numpy.array_equal(history_hash.A[h], numpy.reshape(b.get(), (-1, 16))[i]):
 						print()
 						print()
 
-						print("Collision found:", str(workingstrs[i], "utf-8"))
-						print("Word:", str(history_word[x], "utf-8"))
+						print("Collision found:", workingstrs[i])
+						print("Word:", history_word[h])
 
 						print("Hash: ", end="")
-						printhex(history_hash[x])
+						printhex(history_hash.A[h])
 
 						print("Hash: ", end="")
-						wordmd5 = numpy.array(bytearray(hashlibmd5(history_word[x], usedforsecurity=False).digest())).astype(numpy.ubyte)
+						wordmd5 = numpy.array(bytearray(hashlibmd5(bytearray(history_word[h], "utf-8") , usedforsecurity=False).digest())).astype(numpy.ubyte)
 						printhex(wordmd5)
 
 						print("Completed in: ", time() - start)
 						exit(0)
 
+			history_word = numpy.append(history_word, workingstrs, axis=0)
 			history_hash = numpy.append(history_hash, numpy.reshape(b.get(), (-1, 16)), axis=0)
 
-		print()
+		#								2 / 2 ^ 128, 128 is the size of the output in bits
+		print("Chances increased to: ", 0.00000000000000000000000000000000000000294 * len(history_hash))
 	print()
 
 print()
-print("Completed at: ", time() - start)
+print("Ran out of values in: ", time() - start)
